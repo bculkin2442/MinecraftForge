@@ -3,7 +3,9 @@ package net.minecraftforge.fml.common.registry;
 import com.google.common.reflect.TypeToken;
 
 import net.minecraft.util.ResourceLocation;
+import net.minecraftforge.fml.common.FMLContainer;
 import net.minecraftforge.fml.common.FMLLog;
+import net.minecraftforge.fml.common.InjectedModContainer;
 import net.minecraftforge.fml.common.Loader;
 import net.minecraftforge.fml.common.ModContainer;
 
@@ -35,6 +37,8 @@ public interface IForgeRegistryEntry<V>
      */
     ResourceLocation getRegistryName();
 
+    Class<? super V> getRegistryType();
+
     // Default implementation, modders who make extra items SHOULD extend this instead of Object.
     // We have to do this until we get default implementations in Java 8.
     @SuppressWarnings({ "serial", "unchecked" })
@@ -47,13 +51,13 @@ public interface IForgeRegistryEntry<V>
         public final T setRegistryName(String name)
         {
             if (getRegistryName() != null)
-                throw new IllegalStateException("Attempted to set registry name with exisiting registry name! New: " + name + " Old: " + getRegistryName());
+                throw new IllegalStateException("Attempted to set registry name with existing registry name! New: " + name + " Old: " + getRegistryName());
 
             int index = name.lastIndexOf(':');
             String oldPrefix = index == -1 ? "" : name.substring(0, index);
             name = index == -1 ? name : name.substring(index + 1);
             ModContainer mc = Loader.instance().activeModContainer();
-            String prefix = mc == null ? "minecraft" : mc.getModId();
+            String prefix = mc == null || (mc instanceof InjectedModContainer && ((InjectedModContainer)mc).wrappedContainer instanceof FMLContainer) ? "minecraft" : mc.getModId();
             if (!oldPrefix.equals(prefix) && oldPrefix.length() > 0)
             {
                 FMLLog.bigWarning("Dangerous alternative prefix %s for name %s, invalid registry invocation/invalid name?", oldPrefix, name);
@@ -72,5 +76,8 @@ public interface IForgeRegistryEntry<V>
             if (delegate.name() != null) return delegate.name();
             return registryName != null ? registryName : null;
         }
+
+        @Override
+        public final Class<? super T> getRegistryType() { return token.getRawType(); };
     }
 }

@@ -33,7 +33,6 @@ public class FMLControlledNamespacedRegistry<I extends IForgeRegistryEntry<I>> e
     public static final boolean DEBUG = Boolean.parseBoolean(System.getProperty("fml.debugRegistryEntries", "false"));
     private final Class<I> superType;
     private final boolean isDelegated;
-    private final Field delegateAccessor;
     private ResourceLocation optionalDefaultKey;
     private I optionalDefaultObject;
     private int maxId;
@@ -60,43 +59,30 @@ public class FMLControlledNamespacedRegistry<I extends IForgeRegistryEntry<I>> e
 
     private final BitSet availabilityMap;
 
+    private final Map<ResourceLocation,?> slaves = Maps.newHashMap();
+
     private final AddCallback<I> addCallback;
 
-    public interface AddCallback<T>
-    {
-        public void onAdd(T obj, int id);
-    }
+    private final ClearCallback<I> clearCallback;
 
-    FMLControlledNamespacedRegistry(ResourceLocation defaultKey, int maxIdValue, int minIdValue, Class<I> type, boolean isDelegated)
-    {
-        this(defaultKey, maxIdValue, minIdValue, type, isDelegated, null);
-    }
+    private final CreateCallback<I> createCallback;
 
-    FMLControlledNamespacedRegistry(ResourceLocation defaultKey, int maxIdValue, int minIdValue, Class<I> type, boolean isDelegated, AddCallback<I> callback)
+    FMLControlledNamespacedRegistry(ResourceLocation defaultKey, int minIdValue, int maxIdValue, Class<I> type, AddCallback<I> addCallback, ClearCallback<I> clearCallback, CreateCallback<I> createCallback)
     {
         super(defaultKey);
         this.superType = type;
         this.optionalDefaultKey = defaultKey;
-        this.maxId = maxIdValue;
         this.minId = minIdValue;
+        this.maxId = maxIdValue;
         this.availabilityMap = new BitSet(maxIdValue + 1);
-        this.isDelegated = isDelegated;
-        if (this.isDelegated)
+        this.isDelegated = IForgeRegistryEntry.Impl.class.isAssignableFrom(type);
+        this.addCallback = addCallback;
+        this.clearCallback = clearCallback;
+        this.createCallback = createCallback;
+        if (createCallback != null)
         {
-            try
-            {
-                this.delegateAccessor = type.getField("delegate");
-            } catch (NoSuchFieldException e)
-            {
-                FMLLog.log(Level.ERROR, e, "Delegate class identified with missing delegate field");
-                throw Throwables.propagate(e);
-            }
+            createCallback.onCreate(slaves);
         }
-        else
-        {
-            this.delegateAccessor = null;
-        }
-        this.addCallback = callback;
     }
 
     void validateContent(ResourceLocation registryName)
@@ -562,7 +548,7 @@ public class FMLControlledNamespacedRegistry<I extends IForgeRegistryEntry<I>> e
         availabilityMap.set(id);
         if (addCallback != null)
         {
-            addCallback.onAdd(thing, id);
+            addCallback.onAdd(thing, id, slaves);
         }
     }
 
@@ -577,15 +563,15 @@ public class FMLControlledNamespacedRegistry<I extends IForgeRegistryEntry<I>> e
     }
 
     @SuppressWarnings("unchecked")
-    public Delegate<I> getExistingDelegate(I thing)
+    private Delegate<I> getExistingDelegate(I thing)
     {
-        try
+        if (isDelegated)
         {
-            return (Delegate<I>)delegateAccessor.get(thing);
-        } catch (IllegalAccessException e)
+            return (Delegate<I>)((IForgeRegistryEntry.Impl<I>)thing).delegate;
+        }
+        else
         {
-            FMLLog.log(Level.ERROR, e, "Illegal attempt to access delegate");
-            throw Throwables.propagate(e);
+            return null;
         }
     }
 
@@ -656,7 +642,7 @@ public class FMLControlledNamespacedRegistry<I extends IForgeRegistryEntry<I>> e
 
     FMLControlledNamespacedRegistry<I> makeShallowCopy()
     {
-        return new FMLControlledNamespacedRegistry<I>(optionalDefaultKey, maxId, minId, superType, isDelegated);
+        return new FMLControlledNamespacedRegistry<I>(optionalDefaultKey, minId, maxId, superType, addCallback, clearCallback, createCallback);
     }
 
     void resetSubstitutionDelegates()
@@ -759,7 +745,7 @@ public class FMLControlledNamespacedRegistry<I extends IForgeRegistryEntry<I>> e
 
         for (I i : this.underlyingIntegerMap)
         {
-            addCallback.onAdd(i, this.underlyingIntegerMap.add(i));
+            addCallback.onAdd(i, this.underlyingIntegerMap.add(i), slaves);
         }
     }
 
@@ -774,7 +760,15 @@ public class FMLControlledNamespacedRegistry<I extends IForgeRegistryEntry<I>> e
         return rl;
     }
 
+    @Override
+    public Class<I> getRegistrySuperType()
+    {
+        return superType;
+    }
+
+
     // IForgeRegistry: Modders should only interfaces with these methods
+
     @Override
     public void register(I value)
     {
@@ -788,25 +782,19 @@ public class FMLControlledNamespacedRegistry<I extends IForgeRegistryEntry<I>> e
     }
 
     @Override
-    public boolean contains(ResourceLocation key)
+    public boolean containsValue(I value)
     {
-        return containsKey(key);
+        return getKey(value) != null;
     }
 
     @Override
-    public boolean contains(I value)
-    {
-        return get(value) != null;
-    }
-
-    @Override
-    public I get(ResourceLocation key)
+    public I getValue(ResourceLocation key)
     {
         return getObject(key);
     }
 
     @Override
-    public ResourceLocation get(I value)
+    public ResourceLocation getKey(I value)
     {
         return getNameForObject(value);
     }
@@ -834,7 +822,7 @@ public class FMLControlledNamespacedRegistry<I extends IForgeRegistryEntry<I>> e
             public Entry<ResourceLocation, I> next()
             {
                 final I value = itr.next();
-                final ResourceLocation key = FMLControlledNamespacedRegistry.this.get(value);
+                final ResourceLocation key = FMLControlledNamespacedRegistry.this.getKey(value);
                 return new Entry<ResourceLocation, I>()
                 {
                     @Override
@@ -852,7 +840,7 @@ public class FMLControlledNamespacedRegistry<I extends IForgeRegistryEntry<I>> e
                     @Override
                     public I setValue(I value)
                     {
-                        throw new UnsupportedOperationException("Setting the value in an itterator is not allowed");
+                        throw new UnsupportedOperationException("Setting the value in an iterator is not allowed");
                     }
                 };
             }
@@ -863,5 +851,12 @@ public class FMLControlledNamespacedRegistry<I extends IForgeRegistryEntry<I>> e
                 throw new UnsupportedOperationException("This is a READ ONLY view of this registry.");
             }
         });
+    }
+
+    @SuppressWarnings("unchecked")
+    @Override
+    public <T> T getSlaveMap(ResourceLocation slaveMapName, Class<T> type)
+    {
+        return (T)slaves.get(slaveMapName);
     }
 }
